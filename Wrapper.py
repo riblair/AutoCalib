@@ -84,19 +84,27 @@ def homography_helper(h, corners, M_List):
         second_part = np.array([np.dot(h1,M_tilde),np.dot(h2, M_tilde)]) # technically backwards from the given eq...
         x_j = first_part * second_part
         error = np.sum(np.square(corner-x_j))
+        
         residuals.extend(error.flatten())
 
+    # print(f"Errors: {np.round(np.sum(residuals),4)}")
     return np.array(residuals) 
 
 def estimate_homography(corners):
+    #TODO: FIX...
     M_list = np.ones((9*6,3), np.float32)
-    M_list[:,:2] = np.mgrid[0:6,0:9].T.reshape(-1,2) # could be backwards 
+    M_list[:,:2] = np.mgrid[0:6,0:9].T.reshape(-1,2) # could be backwards TODO: verify that the first element of corners is the (0,0) for our matrix 
+
+    # scale_factor = np.max(np.abs(M_list))
+    # M_list /= scale_factor
+    # corners_copy = copy.deepcopy(corners) / scale_factor
+    corners_copy = copy.deepcopy(corners)
     zeros = np.zeros((3))
     L_Mat = np.zeros((2*len(corners), 9))
-    for i in range(len(corners)):
+    for i in range(len(corners_copy)):
         # Create sets of L 
-        row1 = np.concatenate([M_list[i], zeros, -corners[i][0,0]*M_list[i]], dtype=np.float32)
-        row2 = np.concatenate([zeros, M_list[i], -corners[i][0,1]*M_list[i]], dtype=np.float32)
+        row1 = np.concatenate([M_list[i], zeros, -corners_copy[i][0,0]*M_list[i]], dtype=np.float32)
+        row2 = np.concatenate([zeros, M_list[i], -corners_copy[i][0,1]*M_list[i]], dtype=np.float32)
         L = np.vstack((row1,row2))
         L_Mat[(i*2):(i*2+2), :] = L
     
@@ -105,14 +113,39 @@ def estimate_homography(corners):
     U,S,Vh = np.linalg.svd(L_Mat)
     v_k = np.argmin(S)
     h = Vh[v_k, :] # not a very good 
-    # print(f"Before OPTIM:\n {np.reshape(h, (3,3))}")
+    h /= h[-1]
+
+    # h_init, __ = cv2.findHomography(M_list, corners_copy, method=0)
+    
     """ Use non-linear optim to find better H. (projection of [u,v] onto [X Y] via H)"""
-    result = scipy.optimize.least_squares(homography_helper, h, method='lm', args=(corners, M_list))
-    # print(result)
-    # print(f"After OPTIM:\n {np.reshape(result['x'], (3,3))}")
-    return np.reshape(result['x'], (3,3))
+    result = scipy.optimize.least_squares(homography_helper, h, method='lm', args=(corners_copy, M_list))
+
+    # h *= scale_factor
+    # h_init *= scale_factor
+    # corners_copy *= scale_factor
+    # M_list *= scale_factor
+    # h_optim = result['x'] * scale_factor
+    h_optim = result['x']
+
+    # print(np.round(h_init,6))
+    # print("\n")
+    # print(np.round(np.reshape(h, (3,3)), 6))
+    # print("\n")
+    # print(np.round(np.reshape(h_optim,(3,3)),6))
+
+    # print(f"Det on cv2.fh: {np.round(np.linalg.det(h_init),6)}")
+    # print(f"Err cv2.fh: {np.round(np.sum(homography_helper(h_init.flatten(), corners_copy, M_list)),6)}")
+    # print("\n")
+    # print(f"Det Before: {np.round(np.linalg.det(np.reshape(h, (3,3))),6)}")
+    # print(f"Err Before: {np.round(np.sum(homography_helper(h, corners_copy, M_list)),6)}")
+    # print("\n")
+    # print(f"Det After: {np.round(np.linalg.det(np.reshape(h_optim, (3,3))),6)}")
+    # print(f"Err After: {np.round(np.sum(homography_helper(h_optim, corners_copy, M_list)),6)}")
+    # exit(1)
+    return np.reshape(h_optim, (3,3))
 
 def create_v_mat(h, row_1, row_2):
+    #TODO: CHECK 
     hi = np.reshape(h[row_1, :], (3,1))
     hj = np.reshape(h[row_2, :], (3,1))
 
@@ -126,7 +159,7 @@ def create_v_mat(h, row_1, row_2):
     return v
 
 def solve_for_b(h_list):
-
+    #TODO: CHECK 
     V_Mat = np.zeros(((2*int(len(h_list))), 6))
 
     for i in range(0,len(h_list)):
@@ -143,6 +176,7 @@ def solve_for_b(h_list):
     return b
 
 def get_params_from_b(b):
+    #TODO: CHECK 
     param_dict = dict()
     
 
@@ -185,6 +219,7 @@ def calc_intrinsics():
     h_list = []
     # for each image, we estimate a homography
     for corners in corners_list:
+        print("New Estimate: \n")
         h = estimate_homography(corners)
         h_list.append(h)
 
