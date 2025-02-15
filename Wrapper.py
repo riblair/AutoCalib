@@ -113,7 +113,7 @@ def estimate_homography(corners):
     U,S,Vh = np.linalg.svd(L_Mat)
     v_k = np.argmin(S)
     h = Vh[v_k, :] # not a very good 
-    h /= h[-1]
+    # h /= h[-1]
 
     # h_init, __ = cv2.findHomography(M_list, corners_copy, method=0)
     
@@ -146,15 +146,24 @@ def estimate_homography(corners):
 
 def create_v_mat(h, row_1, row_2):
     #TODO: CHECK 
+    # hi, and hj are correct...
     hi = np.reshape(h[row_1, :], (3,1))
     hj = np.reshape(h[row_2, :], (3,1))
 
-    v = np.concatenate([ hi[0]*hj[1], 
+    element_0 = hi[0]*hj[0]
+    element_1 = hi[0]*hj[1]+hi[1]*hj[0]
+    element_2 = hi[1]*hj[1]
+    element_3 = hi[2]*hj[0]+hi[0]*hj[2]
+    element_4 = hi[2]*hj[1]+hi[1]*hj[2]
+    element_5 = hi[2]*hj[2]
+    
+    # check math here..
+    v = np.concatenate([ hi[0]*hj[0], 
                     hi[0]*hj[1]+hi[1]*hj[0],
                     hi[1]*hj[1],
-                    hi[0]*hj[2]+hi[2]*hj[0],
-                    hi[1]*hj[2]+hi[2]*hj[1],
-                    hi[1]*hj[1]])
+                    hi[2]*hj[0]+hi[0]*hj[2],
+                    hi[2]*hj[1]+hi[1]*hj[2],
+                    hi[2]*hj[2]])
 
     return v
 
@@ -170,22 +179,40 @@ def solve_for_b(h_list):
         V = np.vstack((v12, v11-v22))
         V_Mat[(i*2):(i*2+2), :] = V
 
+    print(np.round(V_Mat, 4))
     U,S,Vh = np.linalg.svd(V_Mat)
     v_k = np.argmin(S)
     b = Vh[v_k, :] 
     return b
+
+def print_K_mat(param_mat):
+    K = np.zeros((3,3))
+    K[0,0] = param_mat["alpha"]
+    K[0,1] = param_mat["gamma"]
+    K[0,2] = param_mat["u0"]
+    K[1,1] = param_mat["beta"]
+    K[1,2] = param_mat["v0"]
+    K[2,2] = 1
+    print(np.round(K,5))
 
 def get_params_from_b(b):
     #TODO: CHECK 
     param_dict = dict()
     
 
-    param_dict["v0"] = (b[1]*b[3]-b[0]*b[4])/(b[0]*b[2]-(b[1]**2))
-    param_dict["lambda"] = b[5] - ((b[3])**2 + param_dict["v0"]*(b[1]*b[3]-b[0]*b[4]))/b[0]
-    param_dict["alpha"] = np.sqrt(param_dict["lambda"]/b[0])
-    param_dict["Beta"] = np.sqrt(param_dict["lambda"]*b[0]/(b[0]*b[2]-(b[1]**2)))
-    param_dict["gamma"] = -b[1]*(param_dict["alpha"]**2)*param_dict["Beta"]/param_dict["lambda"]
-    param_dict["u0"] = param_dict["gamma"]*param_dict["v0"]/param_dict["Beta"]-b[3]*(param_dict["alpha"]**2)/param_dict["lambda"]
+    v0 = (b[1]*b[3]-b[0]*b[4])/(b[0]*b[2]-(b[1]**2))
+    lam = b[5] - ((b[3])**2 + v0*(b[1]*b[3]-b[0]*b[4]))/b[0]
+    alpha = np.sqrt(lam/b[0])
+    beta = np.sqrt(lam*b[0]/(b[0]*b[2]-(b[1]**2)))
+    gamma = -b[1]*(alpha**2)*beta/lam
+    u0 = gamma*v0/beta-b[3]*(alpha**2)/lam
+
+    param_dict["alpha"] = alpha / lam
+    param_dict["beta"] = beta / lam
+    param_dict["gamma"] = gamma / lam
+    param_dict["lambda"] = lam / lam
+    param_dict["u0"] = u0 / lam
+    param_dict["v0"] = v0 / lam
 
     param_dict2 = dict()
 
@@ -193,13 +220,16 @@ def get_params_from_b(b):
     d = b[0]*b[2]-(b[1]**2)
 
     param_dict2["alpha"] = np.sqrt(w/(d*b[0]))
-    param_dict2["Beta"] = np.sqrt((w/(d**2))*b[0])
-    param_dict2["gamma"] = np.sqrt((w/((d**2))*b[0]))*b[1]
+    param_dict2["beta"] = np.sqrt((w/(d**2))*b[0])
+    param_dict2["gamma"] = np.sqrt((w/((d**2)*b[0])))*b[1] # this is positive VS other one is negative...
     param_dict2["u0"] = (b[1]*b[4]-b[2]*b[3])/d
     param_dict2["v0"] = (b[1]*b[3]-b[0]*b[4])/d
 
-    print(param_dict)
-    print(param_dict2)
+
+    print_K_mat(param_dict)
+    print_K_mat(param_dict2)
+    # print(param_dict)
+    # print(param_dict2)
 
     return param_dict
 def calc_intrinsics():
@@ -219,7 +249,7 @@ def calc_intrinsics():
     h_list = []
     # for each image, we estimate a homography
     for corners in corners_list:
-        print("New Estimate: \n")
+        # print("New Estimate: \n")
         h = estimate_homography(corners)
         h_list.append(h)
 
