@@ -60,9 +60,12 @@ def calc_intrinsics_baseline():
     print(newcameramtx)
 
     for image, im_name in zip(images_GS, im_names_GS):
-        dst = cv2.undistort(image, mtx, dist, None, newcameramtx)
+        dst = cv2.undistort(image, newcameramtx, dist, None, newcameramtx)
         x, y, w, h = roi
-        dst = dst[y:y+h, x:x+w]
+        # dst = dst[y:y+h, x:x+w]
+        # cv2.imshow('undistorted', cv2.resize(dst, dsize=(int(dst.shape[1] * .5), int(dst.shape[0]*.5))))
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
     
     mean_error = 0
     for i in range(len(objp_list)):
@@ -70,7 +73,7 @@ def calc_intrinsics_baseline():
         error = cv2.norm(corners_list[i], imgpoints2, cv2.NORM_L2)/len(imgpoints2)
         mean_error += error
 
-    print( "Baseline total error: {}".format(mean_error/len(objp_list)) )
+    print("Baseline total error: {}".format(mean_error/len(objp_list)) ) # 0.0876 for baseline
 
 def homography_helper(h, corners, M_List):
     residuals = []
@@ -90,11 +93,7 @@ def homography_helper(h, corners, M_List):
     # print(f"Errors: {np.round(np.sum(residuals),4)}")
     return np.array(residuals) 
 
-def estimate_homography(corners):
-    #TODO: FIX...
-    M_list = np.ones((9*6,3), np.float32)
-    M_list[:,:2] = np.mgrid[0:6,0:9].T.reshape(-1,2) # could be backwards TODO: verify that the first element of corners is the (0,0) for our matrix 
-
+def estimate_homography(corners, M_list):
     # scale_factor = np.max(np.abs(M_list))
     # M_list /= scale_factor
     # corners_copy = copy.deepcopy(corners) / scale_factor
@@ -145,10 +144,8 @@ def estimate_homography(corners):
     return np.reshape(h_optim, (3,3))
 
 def create_v_mat(h, row_1, row_2):
-    #TODO: CHECK 
-    # hi, and hj are correct...
-    hi = np.reshape(h[row_1, :], (3,1))
-    hj = np.reshape(h[row_2, :], (3,1))
+    hi = np.reshape(h[:, row_1], (3,1))
+    hj = np.reshape(h[:, row_2], (3,1))
 
     element_0 = hi[0]*hj[0]
     element_1 = hi[0]*hj[1]+hi[1]*hj[0]
@@ -179,13 +176,13 @@ def solve_for_b(h_list):
         V = np.vstack((v12, v11-v22))
         V_Mat[(i*2):(i*2+2), :] = V
 
-    print(np.round(V_Mat, 4))
+    # print(np.round(V_Mat, 4))
     U,S,Vh = np.linalg.svd(V_Mat)
     v_k = np.argmin(S)
     b = Vh[v_k, :] 
     return b
 
-def print_K_mat(param_mat):
+def make_K_mat(param_mat):
     K = np.zeros((3,3))
     K[0,0] = param_mat["alpha"]
     K[0,1] = param_mat["gamma"]
@@ -193,10 +190,9 @@ def print_K_mat(param_mat):
     K[1,1] = param_mat["beta"]
     K[1,2] = param_mat["v0"]
     K[2,2] = 1
-    print(np.round(K,5))
+    return K
 
 def get_params_from_b(b):
-    #TODO: CHECK 
     param_dict = dict()
     
 
@@ -207,12 +203,12 @@ def get_params_from_b(b):
     gamma = -b[1]*(alpha**2)*beta/lam
     u0 = gamma*v0/beta-b[3]*(alpha**2)/lam
 
-    param_dict["alpha"] = alpha / lam
-    param_dict["beta"] = beta / lam
-    param_dict["gamma"] = gamma / lam
-    param_dict["lambda"] = lam / lam
-    param_dict["u0"] = u0 / lam
-    param_dict["v0"] = v0 / lam
+    param_dict["alpha"] = alpha         #/ lam
+    param_dict["beta"] = beta           #/ lam
+    param_dict["gamma"] = gamma         #/ lam
+    param_dict["lambda"] = lam          #/ lam
+    param_dict["u0"] = u0               #/ lam
+    param_dict["v0"] = v0               #/ lam
 
     param_dict2 = dict()
 
@@ -225,13 +221,34 @@ def get_params_from_b(b):
     param_dict2["u0"] = (b[1]*b[4]-b[2]*b[3])/d
     param_dict2["v0"] = (b[1]*b[3]-b[0]*b[4])/d
 
-
-    print_K_mat(param_dict)
-    print_K_mat(param_dict2)
-    # print(param_dict)
-    # print(param_dict2)
-
     return param_dict
+
+def estimate_extrinsics(K_mat, h_list):
+    extriniscs_list = []
+
+    for h in h_list:
+        scalar = 1 / np.linalg.norm(np.linalg.inv(K_mat))
+        h1 = np.reshape(h[:, 0], (3,1))
+        h2 = np.reshape(h[:, 1], (3,1))
+        h3 = np.reshape(h[:, 2], (3,1))
+
+        r1 = scalar * np.dot(np.linalg.inv(K_mat), h1)
+        r2 = scalar * np.dot(np.linalg.inv(K_mat), h2)
+        r3 = np.linalg.cross(h1.T,h2.T).T
+        t =  scalar * np.dot(np.linalg.inv(K_mat), h3)
+
+        R = np.hstack((r1, r2, r3))
+
+        U, S, Vh = np.linalg.svd(R)
+        R_real = np.dot(U, Vh) # maybe the transpose of V... Might be useful...
+        # print(R)
+        # print(R_real)
+
+        extrinisc_mat = np.vstack((np.hstack((R,t)), np.array([0, 0, 0, 1]))) # could be R_real... 
+        # print(extrinisc_mat)
+        extriniscs_list.append(extrinisc_mat)
+    return extriniscs_list
+
 def calc_intrinsics():
     # We know that there is a set of (6,9) grid cell corners that are usable for this calibration
     # Also, each corner is exactly 21.5mm apart 
@@ -248,9 +265,11 @@ def calc_intrinsics():
     """Estimate homography via points on the image using DLT equation 2 on page 17"""
     h_list = []
     # for each image, we estimate a homography
+    M_list = np.ones((9*6,3), np.float32)
+    M_list[:,:2] = np.mgrid[0:6,0:9].T.reshape(-1,2)
     for corners in corners_list:
         # print("New Estimate: \n")
-        h = estimate_homography(corners)
+        h = estimate_homography(corners, M_list)
         h_list.append(h)
 
    
@@ -262,17 +281,49 @@ def calc_intrinsics():
 
     parameters = get_params_from_b(b)
 
+
+    K_mat = make_K_mat(parameters)
+    print(np.round(K_mat,5))
+
     """Estimate [R | T] from A?"""
+
+    extriniscs_list = estimate_extrinsics(K_mat, h_list)
+
     """Non-linear solver to increase accuracy of K"""
+        # skip?
+
     """Compute Radial Distortion via non-linear optim..."""
+    k = np.array([[0],[0]])
+
     """Calculate reprojection error for report"""
+
+    mean_error = 0
+    print(extriniscs_list[0])
+    a = extriniscs_list[0][0:3,0:3]
+    b = np.reshape(extriniscs_list[0][0:3, 3], (3,1))
+    print(a)
+    print(b)
+    for i in range(len(corners_list)):
+        imgpoints2, _ = cv2.projectPoints(M_list, extriniscs_list[i][0:3,0:3], np.reshape(extriniscs_list[0][0:3, 3], (3,1)), K_mat, np.array([0,0,0,0]))
+        error = cv2.norm(corners_list[i], imgpoints2, cv2.NORM_L2)/len(imgpoints2)
+        mean_error += error
+    print( "Experimental total error: {}".format(mean_error/len(corners_list)) ) # 50.42 with no distortion estim...
     """Undistort and Write images for figures in report"""
+
+    # for image, im_name in zip(images_RGB, image_names):
+    #     dst = cv2.undistort(image, K_mat, np.array([0,0,0,0]), None, K_mat)
+    #     # x, y, w, h = roi
+    #     # dst = dst[y:y+h, x:x+w]
+    #     cv2.imshow('undistorted', cv2.resize(dst, dsize=(int(dst.shape[1] * .5), int(dst.shape[0]*.5))))
+    #     cv2.imshow('regular', cv2.resize(image, dsize=(int(image.shape[1] * .5), int(image.shape[0]*.5))))
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
 
     pass
 
 def main():
-    # calc_intrinsics_baseline()
-    calc_intrinsics()
+    calc_intrinsics_baseline()
+    # calc_intrinsics()
 
 
 if __name__ == "__main__":
