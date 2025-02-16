@@ -51,29 +51,15 @@ def calc_intrinsics_baseline():
             print("Failure to detect corners")
     
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objp_list, corners_list, im_copy.shape[::-1], None, None)
-    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (height,width), 1, (height,width)) # roi is usable area of image
-    print("\n")
-    print(mtx)
-    print("\n")
-    print(dist) # k1, k2, p1, p2
-    print("\n")
-    print(newcameramtx)
+    k = dist[0, :2]
+    extrinsics_list = []
 
-    for image, im_name in zip(images_GS, im_names_GS):
-        dst = cv2.undistort(image, newcameramtx, dist, None, newcameramtx)
-        x, y, w, h = roi
-        # dst = dst[y:y+h, x:x+w]
-        # cv2.imshow('undistorted', cv2.resize(dst, dsize=(int(dst.shape[1] * .5), int(dst.shape[0]*.5))))
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+    for rvec, tvec in zip(rvecs, tvecs):
+        R, __ = cv2.Rodrigues(rvec)
+        extr = np.hstack((R, tvec))
+        extrinsics_list.append(extr)
     
-    mean_error = 0
-    for i in range(len(objp_list)):
-        imgpoints2, _ = cv2.projectPoints(objp_list[i], rvecs[i], tvecs[i], mtx, dist)
-        error = cv2.norm(corners_list[i], imgpoints2, cv2.NORM_L2)/len(imgpoints2)
-        mean_error += error
-
-    print("Baseline total error: {}".format(mean_error/len(objp_list)) ) # 0.0876 for baseline
+    calculate_reprojection_error(mtx, extrinsics_list, k, corners_list)
 
 def homography_helper(h, corners, M_List):
     residuals = []
@@ -82,21 +68,16 @@ def homography_helper(h, corners, M_List):
         h1 = np.reshape(h[:3], (1,3))
         h2 = np.reshape(h[3:6], (1,3))
         h3 = np.reshape(h[6:], (1,3))
-        # M = np.reshape(M_tilde[0:2], (1,2))
         first_part = 1.0 / np.dot(h3, M_tilde)
-        second_part = np.array([np.dot(h1,M_tilde),np.dot(h2, M_tilde)]) # technically backwards from the given eq...
+        second_part = np.array([np.dot(h1,M_tilde),np.dot(h2, M_tilde)]) 
         x_j = first_part * second_part
         error = np.sum(np.square(corner-x_j))
         
         residuals.extend(error.flatten())
 
-    # print(f"Errors: {np.round(np.sum(residuals),4)}")
     return np.array(residuals) 
 
 def estimate_homography(corners, M_list):
-    # scale_factor = np.max(np.abs(M_list))
-    # M_list /= scale_factor
-    # corners_copy = copy.deepcopy(corners) / scale_factor
     corners_copy = copy.deepcopy(corners)
     zeros = np.zeros((3))
     L_Mat = np.zeros((2*len(corners), 9))
@@ -107,54 +88,20 @@ def estimate_homography(corners, M_list):
         L = np.vstack((row1,row2))
         L_Mat[(i*2):(i*2+2), :] = L
     
-    # print(np.round(L_Mat))
     
     U,S,Vh = np.linalg.svd(L_Mat)
     v_k = np.argmin(S)
-    h = Vh[v_k, :] # not a very good 
-    # h /= h[-1]
-
-    # h_init, __ = cv2.findHomography(M_list, corners_copy, method=0)
+    h = Vh[v_k, :]
     
     """ Use non-linear optim to find better H. (projection of [u,v] onto [X Y] via H)"""
     result = scipy.optimize.least_squares(homography_helper, h, method='lm', args=(corners_copy, M_list))
-
-    # h *= scale_factor
-    # h_init *= scale_factor
-    # corners_copy *= scale_factor
-    # M_list *= scale_factor
-    # h_optim = result['x'] * scale_factor
     h_optim = result['x']
-
-    # print(np.round(h_init,6))
-    # print("\n")
-    # print(np.round(np.reshape(h, (3,3)), 6))
-    # print("\n")
-    # print(np.round(np.reshape(h_optim,(3,3)),6))
-
-    # print(f"Det on cv2.fh: {np.round(np.linalg.det(h_init),6)}")
-    # print(f"Err cv2.fh: {np.round(np.sum(homography_helper(h_init.flatten(), corners_copy, M_list)),6)}")
-    # print("\n")
-    # print(f"Det Before: {np.round(np.linalg.det(np.reshape(h, (3,3))),6)}")
-    # print(f"Err Before: {np.round(np.sum(homography_helper(h, corners_copy, M_list)),6)}")
-    # print("\n")
-    # print(f"Det After: {np.round(np.linalg.det(np.reshape(h_optim, (3,3))),6)}")
-    # print(f"Err After: {np.round(np.sum(homography_helper(h_optim, corners_copy, M_list)),6)}")
-    # exit(1)
     return np.reshape(h_optim, (3,3))
 
 def create_v_mat(h, row_1, row_2):
     hi = np.reshape(h[:, row_1], (3,1))
     hj = np.reshape(h[:, row_2], (3,1))
-
-    element_0 = hi[0]*hj[0]
-    element_1 = hi[0]*hj[1]+hi[1]*hj[0]
-    element_2 = hi[1]*hj[1]
-    element_3 = hi[2]*hj[0]+hi[0]*hj[2]
-    element_4 = hi[2]*hj[1]+hi[1]*hj[2]
-    element_5 = hi[2]*hj[2]
     
-    # check math here..
     v = np.concatenate([ hi[0]*hj[0], 
                     hi[0]*hj[1]+hi[1]*hj[0],
                     hi[1]*hj[1],
@@ -165,7 +112,6 @@ def create_v_mat(h, row_1, row_2):
     return v
 
 def solve_for_b(h_list):
-    #TODO: CHECK 
     V_Mat = np.zeros(((2*int(len(h_list))), 6))
 
     for i in range(0,len(h_list)):
@@ -176,7 +122,6 @@ def solve_for_b(h_list):
         V = np.vstack((v12, v11-v22))
         V_Mat[(i*2):(i*2+2), :] = V
 
-    # print(np.round(V_Mat, 4))
     U,S,Vh = np.linalg.svd(V_Mat)
     v_k = np.argmin(S)
     b = Vh[v_k, :] 
@@ -203,23 +148,12 @@ def get_params_from_b(b):
     gamma = -b[1]*(alpha**2)*beta/lam
     u0 = gamma*v0/beta-b[3]*(alpha**2)/lam
 
-    param_dict["alpha"] = alpha         #/ lam
-    param_dict["beta"] = beta           #/ lam
-    param_dict["gamma"] = gamma         #/ lam
-    param_dict["lambda"] = lam          #/ lam
-    param_dict["u0"] = u0               #/ lam
-    param_dict["v0"] = v0               #/ lam
-
-    param_dict2 = dict()
-
-    w = b[0]*b[2]*b[5] - (b[1]**2)*b[5] - b[0]*(b[4]**2) + 2*b[1]*b[3]*b[4] - b[2]*(b[3]**2)
-    d = b[0]*b[2]-(b[1]**2)
-
-    param_dict2["alpha"] = np.sqrt(w/(d*b[0]))
-    param_dict2["beta"] = np.sqrt((w/(d**2))*b[0])
-    param_dict2["gamma"] = np.sqrt((w/((d**2)*b[0])))*b[1] # this is positive VS other one is negative...
-    param_dict2["u0"] = (b[1]*b[4]-b[2]*b[3])/d
-    param_dict2["v0"] = (b[1]*b[3]-b[0]*b[4])/d
+    param_dict["alpha"] = alpha
+    param_dict["beta"] = beta  
+    param_dict["gamma"] = gamma
+    param_dict["lambda"] = lam 
+    param_dict["u0"] = u0      
+    param_dict["v0"] = v0      
 
     return param_dict
 
@@ -240,20 +174,36 @@ def estimate_extrinsics(K_mat, h_list):
         R = np.hstack((r1, r2, r3))
 
         U, S, Vh = np.linalg.svd(R)
-        R_real = np.dot(U, Vh) # maybe the transpose of V... Might be useful...
-        # print(R)
-        # print(R_real)
-
-        extrinisc_mat = np.vstack((np.hstack((R,t)), np.array([0, 0, 0, 1]))) # could be R_real... 
-        # print(extrinisc_mat)
+        R_real = np.dot(U, Vh) 
+        extrinisc_mat = np.hstack((R,t))
         extriniscs_list.append(extrinisc_mat)
     return extriniscs_list
 
-def calc_intrinsics():
-    # We know that there is a set of (6,9) grid cell corners that are usable for this calibration
-    # Also, each corner is exactly 21.5mm apart 
-    # We can get b from sets of v's stack and solved using SVD
+def calculate_reprojection_error(K_mat, extriniscs_list, k, corners_list):
+    mean_error = 0
+    M_list2 = np.ones((9*6,4), np.float32)
+    M_list2[:,:2] = np.mgrid[0:6,0:9].T.reshape(-1,2)
+    M_list2[:, 2] = 0
+    mean_error = 0
+    for i in range(len(corners_list)):
+        for j in range(len(corners_list[i])):
+            corner = corners_list[i][j]
 
+            projected = np.dot(extriniscs_list[i], M_list2[j])
+            projected /= projected[2]
+
+            # adjust for radial
+            r2 = projected[0]**2 + projected[1]**2
+            distortion = 1 + k[0] * r2 + k[1] * r2**2
+            x_d, y_d = projected[0] * distortion, projected[1] * distortion
+            projected_undistored = np.hstack((x_d, y_d, 1))
+            projected_undistored = np.dot(K_mat, projected_undistored)
+            error = corner - projected_undistored[:2]
+            mean_error += cv2.norm(error, cv2.NORM_L2)
+    print( "Experimental total error: {}".format(mean_error/len(corners_list)) ) # 39.4 with no distortion estim...
+
+
+def calc_intrinsics():
     images_RGB, image_names = load_images("Calibration_Imgs/", -1, cv2.IMREAD_COLOR_RGB)
     corners_list = [] # contains sets of 2-D points from diffrent images in the image frame. 
 
@@ -283,47 +233,33 @@ def calc_intrinsics():
 
 
     K_mat = make_K_mat(parameters)
-    print(np.round(K_mat,5))
+    print(np.round(K_mat,3))
 
-    """Estimate [R | T] from A?"""
+    """Estimate [R | T] from K and h"""
 
     extriniscs_list = estimate_extrinsics(K_mat, h_list)
 
-    """Non-linear solver to increase accuracy of K"""
-        # skip?
+    k = np.array([[0],[0]]) # k is dominated by K and can be set to 0 as an init guess
 
-    """Compute Radial Distortion via non-linear optim..."""
-    k = np.array([[0],[0]])
 
     """Calculate reprojection error for report"""
 
-    mean_error = 0
-    print(extriniscs_list[0])
-    a = extriniscs_list[0][0:3,0:3]
-    b = np.reshape(extriniscs_list[0][0:3, 3], (3,1))
-    print(a)
-    print(b)
-    for i in range(len(corners_list)):
-        imgpoints2, _ = cv2.projectPoints(M_list, extriniscs_list[i][0:3,0:3], np.reshape(extriniscs_list[0][0:3, 3], (3,1)), K_mat, np.array([0,0,0,0]))
-        error = cv2.norm(corners_list[i], imgpoints2, cv2.NORM_L2)/len(imgpoints2)
-        mean_error += error
-    print( "Experimental total error: {}".format(mean_error/len(corners_list)) ) # 50.42 with no distortion estim...
+    calculate_reprojection_error(K_mat, extriniscs_list, k, corners_list)
+
+
     """Undistort and Write images for figures in report"""
-
-    # for image, im_name in zip(images_RGB, image_names):
-    #     dst = cv2.undistort(image, K_mat, np.array([0,0,0,0]), None, K_mat)
-    #     # x, y, w, h = roi
-    #     # dst = dst[y:y+h, x:x+w]
-    #     cv2.imshow('undistorted', cv2.resize(dst, dsize=(int(dst.shape[1] * .5), int(dst.shape[0]*.5))))
-    #     cv2.imshow('regular', cv2.resize(image, dsize=(int(image.shape[1] * .5), int(image.shape[0]*.5))))
-    #     cv2.waitKey(0)
-    #     cv2.destroyAllWindows()
-
-    pass
+    k_undist = np.vstack((k, np.array([[0],[0]])))
+    for image, im_name in zip(images_RGB, image_names):
+        dst = cv2.undistort(image, K_mat, k_undist, None, None)
+        dst_copy = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
+        ret, corners = cv2.findChessboardCorners(dst_copy,(6,9), None)
+        corners2 = cv2.cornerSubPix(dst_copy, corners, WINDOW_SIZE, ZERO_ZONE, CRITERIA)
+        cv2.drawChessboardCorners(dst, (6,9), corners2, True)
+        cv2.imwrite(f"undistored_{im_name}", dst)
 
 def main():
-    calc_intrinsics_baseline()
-    # calc_intrinsics()
+    # calc_intrinsics_baseline()
+    calc_intrinsics()
 
 
 if __name__ == "__main__":

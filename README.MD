@@ -1,1 +1,0 @@
-HW 1 for RBE 549 - Computer Vision, WPI 2025
